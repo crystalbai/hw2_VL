@@ -100,6 +100,7 @@ You can create an instance of the `pascal_voc`  class by doing something like th
 ```python
 	# You can try running these 
 	# commands in the python interpreter
+	>>> import _init_paths
 	>>> from datasets.factory import get_imdb
 	>>> imdb = get_imdb('voc_2007_trainval')
 ```
