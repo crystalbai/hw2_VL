@@ -19,8 +19,6 @@ from fast_rcnn.bbox_transform import bbox_transform_inv, clip_boxes
 from datasets.factory import get_imdb
 from fast_rcnn.config import cfg, cfg_from_file, get_output_dir
 
-from myutils import keyboard
-
 # hyper-parameters
 # ------------
 imdb_name = 'voc_2007_test'
