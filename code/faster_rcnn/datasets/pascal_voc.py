@@ -22,8 +22,6 @@ import uuid
 from .voc_eval import voc_eval
 from fast_rcnn.config import cfg
 
-from myutils import keyboard
-
 
 class pascal_voc(imdb):
   def __init__(self, image_set, year, devkit_path=None):
