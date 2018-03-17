@@ -4,12 +4,12 @@ import torch.utils.model_zoo as model_zoo
 model_urls = {
         'alexnet': 'https://download.pytorch.org/models/alexnet-owt-4df8aa71.pth',
 }
-
+import torch.nn.functional as F
 from PIL import Image
 import os
 import os.path
 import numpy as np
-from myutils import *
+import cv2
 
 IMG_EXTENSIONS = ['.jpg', '.jpeg', '.png', '.ppm', '.bmp', '.pgm']
 
@@ -31,9 +31,8 @@ def find_classes(imdb):
     #TODO: classes: list of classes
     #TODO: class_to_idx: dictionary with keys=classes and values=class index
 
-
-
-
+    classes = imdb.classes
+    class_to_idx = {c:idx for idx, c in enumerate(classes)}
     return classes, class_to_idx
 
 
@@ -41,11 +40,12 @@ def make_dataset(imdb, class_to_idx):
     #TODO: return list of (image path, list(+ve class indices)) tuples
     #You will be using this in IMDBDataset
 
+    dataset = []
+    roidb = imdb.gt_roidb()
+    for i in range(imdb.num_images):
+        dataset += [(imdb.image_path_at(i), roidb[i]['gt_classes'])]
 
-
-
-
-    return images
+    return dataset
 
 
 def pil_loader(path):
@@ -70,7 +70,12 @@ def default_loader(path):
         return accimage_loader(path)
     else:
         return pil_loader(path)
-
+    
+    
+def weights_init(m):
+    if isinstance(m, nn.Conv2d):
+        nn.init.xavier_uniform(m.weight, gain = 0.01)
+        m.bias.data.fill_(0)
 
 
 class LocalizerAlexNet(nn.Module):
@@ -78,17 +83,46 @@ class LocalizerAlexNet(nn.Module):
         super(LocalizerAlexNet, self).__init__()
         #TODO: Define model
 
+        self.features = nn.Sequential(
+            nn.Conv2d(3, 64, kernel_size=11, stride=4, padding=2),
+            nn.ReLU(inplace=True),
+            nn.MaxPool2d(kernel_size=3, stride=2),
+            nn.Conv2d(64, 192, kernel_size=5, padding=2),
+            nn.ReLU(inplace=True),
+            nn.MaxPool2d(kernel_size=3, stride=2),
+            nn.Conv2d(192, 384, kernel_size=3, padding=1),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(384, 256, kernel_size=3, padding=1),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(256, 256, kernel_size=3, padding=1),
+            nn.ReLU(inplace=True),
+            nn.MaxPool2d(kernel_size=3, stride=2),
+        )
+        self.classifier = nn.Sequential(
+            nn.Conv2d(256, 256, kernel_size=(3, 3), stride=(1, 1)),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(256, 256, kernel_size=(1, 1), stride=(1, 1)),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(256, 20, kernel_size=(1, 1), stride=(1, 1)),
 
+        )
 
 
 
     def forward(self, x):
         #TODO: Define forward pass
+        x = self.features(x)
+        x = self.classifier(x)
+#         print "feature map shape"
+#         print x.shape
+        self.f_map = x
+        output = F.max_pool2d(x, kernel_size=x.size()[2:])
+        return output
+    
+    def get_featuremap(self):
+        return self.f_map
 
 
-
-
-        return x
 
 
 
@@ -118,11 +152,17 @@ def localizer_alexnet(pretrained=False, **kwargs):
     model = LocalizerAlexNet(**kwargs)
     #TODO: Initialize weights correctly based on whether it is pretrained or
     #not
+    if pretrained:
+        model.apply(weights_init)
+        print("=> using pre-trained model '{}'".format('alexnet'))
+        pretrained_state = model_zoo.load_url(model_urls['alexnet'])
+        model_state = model.state_dict()
 
-
-
-
-
+        pretrained_state = {k: v for k, v in pretrained_state.iteritems() if
+                            k in model_state and v.size() == model_state[k].size()}
+        model_state.update(pretrained_state)
+        model.load_state_dict(model_state)
+        # model.load_state_dict(model_zoo.load_url(model_urls['alexnet']))
     return model
 
 def localizer_alexnet_robust(pretrained=False, **kwargs):
@@ -188,10 +228,12 @@ class IMDBDataset(data.Dataset):
         """
         # TODO: Write the rest of this function
 
-
-
-
-
+        tmp = self.imgs[index]
+        img = pil_loader(tmp[0])
+        cls = tmp[1]
+        target = np.zeros(len(self.classes))-1
+        for c in cls:
+            target[c-1] = 1
 
         if self.transform is not None:
             img = self.transform(img)

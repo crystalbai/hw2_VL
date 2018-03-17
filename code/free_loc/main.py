@@ -3,10 +3,10 @@ import os
 import shutil
 import time
 import sys
+import math
 sys.path.insert(0,'/home/spurushw/reps/hw-wsddn-sol/faster_rcnn')
 import sklearn
 import sklearn.metrics
-
 import torch
 import torch.nn as nn
 import torch.nn.parallel
@@ -19,9 +19,13 @@ import torch.utils.data.distributed
 import torchvision.transforms as transforms
 import torchvision.datasets as datasets
 import torchvision.models as models
-
+import _init_paths
+from logger import Logger
 from datasets.factory import get_imdb
 from custom import *
+from eval import compute_map,compute_curve
+import visdom
+import scipy.misc
 
 model_names = sorted(name for name in models.__dict__
     if name.islower() and not name.startswith("__")
@@ -31,13 +35,13 @@ parser = argparse.ArgumentParser(description='PyTorch ImageNet Training')
 parser.add_argument('--arch', default='localizer_alexnet')
 parser.add_argument('-j', '--workers', default=4, type=int, metavar='N',
                     help='number of data loading workers (default: 4)')
-parser.add_argument('--epochs', default=2, type=int, metavar='N',
+parser.add_argument('--epochs', default=30, type=int, metavar='N',
                     help='number of total epochs to run')
 parser.add_argument('--start-epoch', default=0, type=int, metavar='N',
                     help='manual epoch number (useful on restarts)')
-parser.add_argument('-b', '--batch-size', default=256, type=int,
+parser.add_argument('-b', '--batch-size', default=32, type=int,
                     metavar='N', help='mini-batch size (default: 256)')
-parser.add_argument('--lr', '--learning-rate', default=0.1, type=float,
+parser.add_argument('--lr', '--learning-rate', default=0.01, type=float,
                     metavar='LR', help='initial learning rate')
 parser.add_argument('--momentum', default=0.9, type=float, metavar='M',
                     help='momentum')
@@ -51,7 +55,7 @@ parser.add_argument('--resume', default='', type=str, metavar='PATH',
                     help='path to latest checkpoint (default: none)')
 parser.add_argument('-e', '--evaluate', dest='evaluate', action='store_true',
                     help='evaluate model on validation set')
-parser.add_argument('--pretrained', dest='pretrained', action='store_true',
+parser.add_argument('--pretrained', dest='pretrained', action='store_true',default=True,
                     help='use pre-trained model')
 parser.add_argument('--world-size', default=1, type=int,
                     help='number of distributed processes')
@@ -63,8 +67,28 @@ parser.add_argument('--vis',action='store_true')
 
 best_prec1 = 0
 
+# def multilabel_loss(fx,y):
+#     loss = 0.0
+#     batch = fx.size(0)
+#     tmp =fx.data.cpu().numpy()
+    
+#     print "loss_pred_{0}_max_{1}_min".format(tmp.max(), tmp.min())
 
+#     cls = fx.size(1)
+# #     print "{0}_batchs_{1}_cls".format(batch, cls)
+#     for b in range(batch):
+#         for k in range(cls):
+#             loss += torch.log(1+ torch.exp(-y[b,k]*fx[b,k]))
+#     loss = loss/batch
+#     return loss
+def multilabel_loss(fx,y):
+    batch = fx.size(0)
+    loss = torch.log(1+ torch.exp(-y*fx)).sum(0).sum(0)/batch
+    return loss
+
+# vis = visdom.Visdom(server='http://localhost',port='8097')
 def main():
+    np.random.seed(5)
     global args, best_prec1
     args = parser.parse_args()
     args.distributed = args.world_size > 1
@@ -82,6 +106,12 @@ def main():
 
     # TODO:
     # define loss function (criterion) and optimizer
+    criterion = multilabel_loss
+    optimizer = torch.optim.SGD(model.parameters(), args.lr,
+                                momentum=args.momentum,
+                                weight_decay=args.weight_decay)
+
+
 
 
 
@@ -120,7 +150,7 @@ def main():
         ]))
     train_sampler = None
     train_loader = torch.utils.data.DataLoader(
-        train_dataset, batch_size=args.batch_size, shuffle=(train_sampler is None),
+        train_dataset, batch_size=args.batch_size, shuffle=False,
         num_workers=args.workers, pin_memory=True, sampler=train_sampler)
 
     val_loader = torch.utils.data.DataLoader(
@@ -133,13 +163,13 @@ def main():
         num_workers=args.workers, pin_memory=True)
 
     if args.evaluate:
-        validate(val_loader, model, criterion)
+        validate(val_loader, model, criterion, logger,0)
         return
 
     # TODO: Create loggers for visdom and tboard
     # TODO: You can pass the logger objects to train(), make appropriate
     # modifications to train()
-
+    logger = Logger('./tboard', name='freeloc-testall')
 
 
 
@@ -151,11 +181,11 @@ def main():
         adjust_learning_rate(optimizer, epoch)
 
         # train for one epoch
-        train(train_loader, model, criterion, optimizer, epoch)
+        train(train_loader, model, criterion, optimizer, epoch,logger)
 
         # evaluate on validation set
         if epoch%args.eval_freq==0 or epoch==args.epochs-1:
-            m1, m2 = validate(val_loader, model, criterion)
+            m1, m2 = validate(val_loader, model, criterion, logger,epoch)
             score = m1*m2
             # remember best prec@1 and save checkpoint
             is_best =  score > best_prec1
@@ -170,7 +200,24 @@ def main():
 
 
 #TODO: You can add input arguments if you wish
-def train(train_loader, model, criterion, optimizer, epoch):
+class UnNormalize(object):
+    def __init__(self, mean, std):
+        self.mean = mean
+        self.std = std
+
+    def __call__(self, input):
+        """
+        Args:
+            tensor (Tensor): Tensor image of size (C, H, W) to be normalized.
+        Returns:
+            Tensor: Normalized image.
+        """
+        for tensor in input:
+            for t, m, s in zip(tensor, self.mean, self.std):
+                t.mul_(s).add_(m)
+                # The normalize code -> t.sub_(m).div_(s)
+        return input
+def train(train_loader, model, criterion, optimizer, epoch,logger):
     batch_time = AverageMeter()
     data_time = AverageMeter()
     losses = AverageMeter()
@@ -184,29 +231,38 @@ def train(train_loader, model, criterion, optimizer, epoch):
     for i, (input, target) in enumerate(train_loader):
         # measure data loading time
         data_time.update(time.time() - end)
-
+#         print np.unique(target)
+#         while 1:
         target = target.type(torch.FloatTensor).cuda(async=True)
         input_var = torch.autograd.Variable(input, requires_grad=True)
         target_var = torch.autograd.Variable(target)
-
         # TODO: Get output from model
         # TODO: Perform any necessary functions on the output
         # TODO: Compute loss using ``criterion``
         # compute output
 
+        imoutput = model(input_var)
+        cls = imoutput.size(1)
+        batch = imoutput.size(0)
+        imoutput = imoutput.view(batch, cls)
+        loss = criterion(imoutput, target_var)
+        
+#         print "loss test value{0}".format(loss)
 
-
+#             print target
+#             print imoutput.data
 
         # measure metrics and record loss
         m1 = metric1(imoutput.data, target)
         m2 = metric2(imoutput.data, target)
         losses.update(loss.data[0], input.size(0))
-        avg_m1.update(m1[0], input.size(0))
-        avg_m2.update(m2[0], input.size(0))
-        
+        avg_m1.update(m1, input.size(0))
+        avg_m2.update(m2, input.size(0))
         # TODO: 
         # compute gradient and do SGD step
-
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
 
 
 
@@ -214,8 +270,10 @@ def train(train_loader, model, criterion, optimizer, epoch):
         # measure elapsed time
         batch_time.update(time.time() - end)
         end = time.time()
-        
+
         if i % args.print_freq == 0:
+            tmp =imoutput.data.cpu().numpy()
+            print "loss_pred_{0}_max_{1}_min".format(tmp.max(), tmp.min())
             print('Epoch: [{0}][{1}/{2}]\t'
                   'Time {batch_time.val:.3f} ({batch_time.avg:.3f})\t'
                   'Data {data_time.val:.3f} ({data_time.avg:.3f})\t'
@@ -228,9 +286,39 @@ def train(train_loader, model, criterion, optimizer, epoch):
 
         #TODO: Visualize things as mentioned in handout
         #TODO: Visualize at appropriate intervals
-        
+        logger.model_param_histo_summary(model, epoch*(len(train_loader))+i)
+        logger.scalar_summary('loss', loss, epoch*(len(train_loader))+i)
+        logger.scalar_summary('m1', m1, epoch*(len(train_loader))+i)
+        logger.scalar_summary('m2', m2, epoch*(len(train_loader))+i)
+        if i % np.floor(len(train_loader)/4) == 0:
+#         if 1:
+            # visual images
+            logger.image_summary("image_visual", input, epoch*(len(train_loader))+i)
+            logger.feature_map_summary("feature_map_visual", model.get_featuremap(), target,epoch*(len(train_loader))+i)
+            #visual uisng visdom
+            
+#             unorm = UnNormalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225))
+#             vis_tensor = unorm(input)
+#             cap = "{0}_{1}_{2}_image".format(epoch, epoch*(len(train_loader))+i, i)
+#             vis.images(vis_tensor, opts=dict(title= "images", caption = cap))
+            
+#             f_map = model.get_featuremap().data.cpu().numpy()
+#             gt_classes = target
+#             imr = np.zeros((f_map.shape[0],f_map.shape[1], 512, 512))
+#             id_cls = {idx:c for idx, c in enumerate(train_loader.dataset.classes)}
+#             for idx in range(gt_classes.shape[1]):
+#                 for batch_i in range(gt_classes.shape[0]):
+#                     tmp = f_map[batch_i,idx, :,:]
 
-def validate(val_loader, model, criterion):
+#                     imr[batch_i,idx] = scipy.misc.imresize(tmp, (512, 512))
+                
+#                 cap = "{0}_{1}_{2}_{3}".format(epoch, epoch*(len(train_loader))+i, i, id_cls[idx])
+#                 cur_cls = imr[:,idx,:,:]
+#                 vis.images(cur_cls[:,np.newaxis,:,:],opts=dict(title= "featuremap", caption = cap))
+#                 print cap
+            
+
+def validate(val_loader, model, criterion, logger, epoch):
     batch_time = AverageMeter()
     losses = AverageMeter()
     avg_m1 = AverageMeter()
@@ -250,7 +338,11 @@ def validate(val_loader, model, criterion):
         # TODO: Perform any necessary functions on the output
         # TODO: Compute loss using ``criterion``
         # compute output
-
+        imoutput = model(input_var)
+        cls = imoutput.size(1)
+        batch = imoutput.size(0)
+        imoutput = imoutput.view(batch, cls)
+        loss = criterion(imoutput, target_var)
 
 
 
@@ -258,8 +350,8 @@ def validate(val_loader, model, criterion):
         m1 = metric1(imoutput.data, target)
         m2 = metric2(imoutput.data, target)
         losses.update(loss.data[0], input.size(0))
-        avg_m1.update(m1[0], input.size(0))
-        avg_m2.update(m2[0], input.size(0))
+        avg_m1.update(m1, input.size(0))
+        avg_m2.update(m2, input.size(0))
 
         # measure elapsed time
         batch_time.update(time.time() - end)
@@ -277,12 +369,14 @@ def validate(val_loader, model, criterion):
         #TODO: Visualize things as mentioned in handout
         #TODO: Visualize at appropriate intervals
 
-
-
+  
 
 
     print(' * Metric1 {avg_m1.avg:.3f} Metric2 {avg_m2.avg:.3f}'
           .format(avg_m1=avg_m1, avg_m2=avg_m2))
+    logger.scalar_summary('val_loss', losses.avg, epoch)
+    logger.scalar_summary('val_m1', avg_m1.avg, epoch)
+    logger.scalar_summary('val_m2', avg_m2.avg, epoch)
 
     return avg_m1.avg, avg_m2.avg
 
@@ -319,13 +413,57 @@ def adjust_learning_rate(optimizer, epoch):
         param_group['lr'] = lr
 
 
+# def metric1(output, target):
+#     # TODO: Ignore for now - proceed till instructed
+#     output = output.cpu().numpy()
+#     target = target.cpu().numpy()
+#     AP = compute_map(target, output, average=None)
+#     for i in range(len(AP)):
+#         if math.isnan(AP[i]):
+#             AP[i] = 0         
+#     mAP = np.mean(AP)
+# #     print('Obtained {} mAP'.format(mAP))
+#     return mAP
+
 def metric1(output, target):
     # TODO: Ignore for now - proceed till instructed
-    return [0]
+    #transfer fx to p(k|x)
+    thres = 0.5
+    output = output.cpu().numpy()
+
+    p = np.zeros(target.shape)
+    for i in range(output.shape[0]):
+        for j in range(output.shape[1]):
+            p[i][j] = ( (1.0/(1+np.exp(-output[i][j]))))
+            target[i][j] = int(target[i][j] == 1)
+
+    AP = compute_map(target, p, average=None)
+    for i in range(len(AP)):
+        if math.isnan(AP[i]):
+            AP[i] = 0  
+    mAP = np.mean(AP)
+#     print('Obtained probability {} mAP'.format(mAP))
+    return mAP
 
 def metric2(output, target):
-    # TODO: Ignore for now - proceed till instructed
-    return [0]
+    # since this dataset is highly unbalanced, we only penalize the false positive 
+        # TODO: Ignore for now - proceed till instructed
+    #transfer fx to p(k|x)
+    thres = 0.5
+    output = output.cpu().numpy()
+    p = np.zeros(target.shape, dtype = np.int32)
+    for i in range(output.shape[0]):
+        for j in range(output.shape[1]):
+            tmp = ( (1.0/(1+np.exp(-output[i][j]))))
+            p[i][j] = int(tmp> thres)
+            target[i][j] = int(target[i][j] == 1)
+    AP = compute_curve(target, p, average=None)
+    for i in range(len(AP)):
+        if math.isnan(AP[i]):
+            AP[i] = 0  
+    mAP = np.mean(AP)
+#     print('Obtained curve {}'.format(mAP))
+    return mAP
 
 if __name__ == '__main__':
     main()

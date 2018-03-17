@@ -8,9 +8,8 @@ def add_path(path):
 this_dir = osp.dirname(__file__)
 
 # Add lib to PYTHONPATH
-lib_path = osp.join(this_dir, 'faster_rcnn')
+lib_path = osp.join(this_dir,'..', 'faster_rcnn')
 add_path(lib_path)
-lib_path2 = osp.join(this_dir, 'free_loc')
+lib_path2 = osp.join(this_dir,'..')
 add_path(lib_path2)
-
 

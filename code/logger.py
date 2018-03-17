@@ -10,8 +10,10 @@ Description:
 import tensorflow as tf
 from torch.autograd import Variable
 import numpy as np
-import scipy.misc 
+import scipy.misc
 import os
+import torchvision.transforms as transforms
+
 try:
     from StringIO import StringIO  # Python 2.7
 except ImportError:
@@ -19,7 +21,7 @@ except ImportError:
 
 
 class Logger(object):
-    
+
     def __init__(self, log_dir, name=None):
         """Create a summary writer logging to log_dir."""
         if name is None:
@@ -62,7 +64,7 @@ class Logger(object):
         # Create and write Summary
         summary = tf.Summary(value=img_summaries)
         self.writer.add_summary(summary, step)
-        
+
     def histo_summary(self, tag, values, step, bins=1000):
         """Log a histogram of the tensor of values."""
 
@@ -109,5 +111,19 @@ class Logger(object):
             tag = tag.replace('.', '/')
             tag = self.name+'/'+tag
             self.histo_summary(tag, self.to_np(value), step)
-            self.histo_summary(tag+'/grad', self.to_np(value.grad), step)  
+            self.histo_summary(tag+'/grad', self.to_np(value.grad), step)
+
+    def feature_map_summary(self,tag, featuremap, gt_classes, iter):
+        featuremap = self.to_np(featuremap)
+        map = np.zeros((featuremap.shape[0], featuremap.shape[-2], featuremap.shape[-1]))
+        map_list = []
+        for i in range(gt_classes.shape[0]):
+            idx = np.where(gt_classes[i] == 1)
+            map[i] = featuremap[i,idx, :,:].sum(1)
+
+            imr = scipy.misc.imresize(map[i], (512, 512))
+            map_list += [imr]
+        self.image_summary(tag, map_list, iter)
+
+
 

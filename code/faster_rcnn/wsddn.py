@@ -13,7 +13,7 @@ from fast_rcnn.bbox_transform import bbox_transform_inv, clip_boxes
 import network
 from network import Conv2d, FC
 from roi_pooling.modules.roi_pool import RoIPool
-from vgg16 import VGG16
+from torch.autograd import Variable
 
 def nms_detections(pred_boxes, scores, nms_thresh, inds=None):
     dets = np.hstack((pred_boxes,
@@ -22,6 +22,8 @@ def nms_detections(pred_boxes, scores, nms_thresh, inds=None):
     if inds is None:
         return pred_boxes[keep], scores[keep]
     return pred_boxes[keep], scores[keep], inds[keep]
+
+
 
 
 class WSDDN(nn.Module):
@@ -44,10 +46,43 @@ class WSDDN(nn.Module):
             print(classes)
         
         #TODO: Define the WSDDN model
-        
-        
-        
-        
+        self.features = nn.Sequential(
+            nn.Conv2d(3, 64, kernel_size=11, stride=4, padding=2),
+            nn.ReLU(inplace=True),
+            nn.MaxPool2d(kernel_size=3, stride=2),
+            nn.Conv2d(64, 192, kernel_size=5, padding=2),
+            nn.ReLU(inplace=True),
+            nn.MaxPool2d(kernel_size=3, stride=2),
+            nn.Conv2d(192, 384, kernel_size=3, padding=1),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(384, 256, kernel_size=3, padding=1),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(256, 256, kernel_size=3, padding=1),
+            nn.ReLU(inplace=True),
+            nn.MaxPool2d(kernel_size=3, stride=2),
+        )
+        self.roi_pool = RoIPool(7, 7, 1.0 / 34)
+        self.classifier_c = nn.Sequential(
+            nn.Dropout(),
+            nn.Linear(256 * 7 * 7, 4096),
+            nn.ReLU(inplace=True),
+            nn.Dropout(),
+            nn.Linear(4096, 4096),
+            nn.ReLU(inplace=True),
+            nn.Linear(4096, self.n_classes),
+            nn.Softmax(dim = 0)
+        )
+        self.classifier_d = nn.Sequential(
+            nn.Dropout(),
+            nn.Linear(256 * 7 * 7, 4096),
+            nn.ReLU(inplace=True),
+            nn.Dropout(),
+            nn.Linear(4096, 4096),
+            nn.ReLU(inplace=True),
+            nn.Linear(4096, self.n_classes),
+            nn.Softmax(dim =1)
+        )
+
         
         
         # loss
@@ -68,18 +103,21 @@ class WSDDN(nn.Module):
         #TODO: Use im_data and rois as input
         # compute cls_prob which are N_roi X 20 scores
         # Checkout faster_rcnn.py for inspiration
+        features = self.features(im_data)
+        rois = network.np_to_variable(rois, is_cuda=True)
+        pooled_features = self.roi_pool(features, rois)
+        x = pooled_features.view(pooled_features.size()[0], -1)
+        output_c = self.classifier_c(x)
 
-
-
-
-
-
-
+        output_d = self.classifier_d(x)
+        pred_score = output_c*output_d
+        cls_prob = pred_score.sum(0)
+        assert cls_prob.max().data.cpu().numpy() < 1
         if self.training:
             label_vec = network.np_to_variable(gt_vec, is_cuda=True)
             label_vec = label_vec.view(self.n_classes,-1)
             self.cross_entropy = self.build_loss(cls_prob, label_vec)
-        return cls_prob
+        return pred_score
     
     def build_loss(self, cls_prob, label_vec):
         """Computes the loss
@@ -92,13 +130,12 @@ class WSDDN(nn.Module):
         #TODO: Compute the appropriate loss using the cls_prob that is the
         #output of forward()
         #Checkout forward() to see how it is called
+        ## alert, the image number should be 1 per batch
+        loss = 0.0
+        for cls_idx in range(self.n_classes):
+            loss += torch.log(label_vec[cls_idx]*(cls_prob[cls_idx]-0.5)+0.5)
 
-
-
-
-
-
-	return loss
+	    return loss
 
     def get_image_blob_noscale(self, im):
         im_orig = im.astype(np.float32, copy=True)

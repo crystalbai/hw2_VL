@@ -58,7 +58,7 @@ def vis_detections(im, class_name, dets, thresh=0.8):
 def im_detect(net, image, rois):
     """Detect object classes in an image given object proposals.
     Returns:
-        scores (ndarray): R x K array of object class scores (K includes
+        scores (ndarray): R x K array of object class scores (K includes // exclude
             background as object category 0)
         boxes (ndarray): R x (4*K) array of predicted bounding boxes
     """
@@ -93,7 +93,7 @@ def test_net(name, net, imdb, max_per_image=300, thresh=0.05, visualize=False,
     #    all_boxes[cls][image] = N x 5 array of detections in
     #    (x1, y1, x2, y2, score)
     all_boxes = [[[] for _ in xrange(num_images)]
-                 for _ in xrange(imdb.num_classes+1)]
+                 for _ in xrange(imdb.num_classes)]
 
     output_dir = get_output_dir(imdb, name)
 
@@ -115,9 +115,9 @@ def test_net(name, net, imdb, max_per_image=300, thresh=0.05, visualize=False,
             # im2show = np.copy(im[:, :, (2, 1, 0)])
             im2show = np.copy(im)
 
-        # skip j = 0, because it's the background class
-        for j in xrange(1, imdb.num_classes+1):
-            newj = j-1
+        # no skipping !!
+        for j in xrange(0, imdb.num_classes+1):
+            newj = j
             inds = np.where(scores[:, newj] > thresh)[0]
             cls_scores = scores[inds, newj]
             cls_boxes = boxes[inds, newj * 4:(newj + 1) * 4]
@@ -132,7 +132,7 @@ def test_net(name, net, imdb, max_per_image=300, thresh=0.05, visualize=False,
         # Limit to max_per_image detections *over all classes*
         if max_per_image > 0:
             image_scores = np.hstack([all_boxes[j][i][:, -1]
-                                      for j in xrange(1, imdb.num_classes)])
+                                      for j in xrange(0, imdb.num_classes)])
             if len(image_scores) > max_per_image:
                 image_thresh = np.sort(image_scores)[-max_per_image]
                 for j in xrange(1, imdb.num_classes):
