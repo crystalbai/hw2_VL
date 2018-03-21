@@ -14,18 +14,20 @@ import network
 from wsddn import WSDDN
 from logger import Logger
 from utils.timer import Timer
-
+from fast_rcnn.nms_wrapper import nms
 import roi_data_layer.roidb as rdl_roidb
 from roi_data_layer.layer import RoIDataLayer
 from datasets.factory import get_imdb
 from fast_rcnn.config import cfg, cfg_from_file
 from free_loc.main import metric1, metric2,AverageMeter
-
+import torch.nn
+import math
 try:
     from termcolor import cprint
 except ImportError:
     cprint = None
-
+def save_checkpoint(state, filename='checkpoint.pth.tar'):
+    torch.save(state, filename)
 def log_print(text, color=None, on_color=None, attrs=None):
     if cprint is not None:
         cprint(text, color=color, on_color=on_color, attrs=attrs)
@@ -41,17 +43,18 @@ pretrained_model = 'data/pretrained_model/alexnet_imagenet.npy'
 output_dir = 'models/saved_model'
 visualize = True
 vis_interval = 5000
-epoch_loss = 500
+epoch_loss = 20
 start_step = 0
 end_step = 50000
 lr_decay_steps = {150000}
 lr_decay = 1./10
-thresh = 0.0001
+thresh = 0.0
 rand_seed = 1024
 _DEBUG = False
 use_tensorboard = True
 use_visdom = False
 log_grads = False
+resume = False
 
 remove_all_log = True   # remove all historical experiments in TensorBoard
 exp_name = "paper2" # the previous experiment name in TensorBoard
@@ -126,9 +129,11 @@ data_layer_test = RoIDataLayer(test_roidb, test_imdb.num_classes)
 
 # Create network and initialize
 net = WSDDN(classes=imdb.classes, debug=_DEBUG)
-network.weights_normal_init(net, dev=0.001)
+network.weights_normal_init(net, dev=0.0001)
 if os.path.exists('pretrained_alexnet.pkl'):
     pret_net = pkl.load(open('pretrained_alexnet.pkl','r'))
+#     pret_net = pkl.load(open('./models/saved_model/wsdnn_50000.h5','r'))
+        
 else:
     pret_net = model_zoo.load_url('https://download.pytorch.org/models/alexnet-owt-4df8aa71.pth')
     pkl.dump(pret_net, open('pretrained_alexnet.pkl','wb'), pkl.HIGHEST_PROTOCOL)
@@ -144,16 +149,24 @@ for name, param in pret_net.items():
     except:
         print('Did not find {}'.format(name))
         continue
-
+if resume and os.path.isfile("./wsddn_test_checkpoint"):
+    print("=> loading checkpoint '{}'".format(args.resume))
+    checkpoint = torch.load(args.resume)
+    args.start_epoch = checkpoint['epoch']
+    model.load_state_dict(checkpoint['state_dict'])
+    optimizer.load_state_dict(checkpoint['optimizer'])
+    print("=> loaded checkpoint '{}' (epoch {})"
+          .format(args.resume, checkpoint['epoch']))
 # Move model to GPU and set train mode
 net.cuda()
 net.train()
 
+
 id_cls = {idx:c for idx, c in enumerate(imdb.classes)}
 # Create optimizer for network parameters
 params = list(net.parameters())
-optimizer = torch.optim.SGD(params[2:], lr=lr, 
-                            momentum=momentum, weight_decay=weight_decay)
+# optimizer = torch.optim.SGD(params[10:],lr = lr,momentum=momentum, weight_decay=weight_decay)
+optimizer = torch.optim.Adam(params[2:],lr = lr, weight_decay=weight_decay)
 
 if not os.path.exists(output_dir):
     os.makedirs(output_dir)
@@ -173,6 +186,7 @@ for step in range(start_step, end_step+1):
     rois = blobs['rois']
     im_info = blobs['im_info']
     gt_vec = blobs['labels']
+    print( blobs['im_name'])
 
 #     cls_tag = ""
 #     _,gt_print_idx =np.where(gt_vec==1)
@@ -182,8 +196,7 @@ for step in range(start_step, end_step+1):
 #     print(cls_tag)
 #     logger.image_summary(cls_tag, im_data, step)
     # forward
-    
-    net(im_data, rois, im_info, gt_vec)
+    pred = net(im_data, rois, im_info, gt_vec)
     loss = net.loss
     train_loss += loss.data[0]
     step_cnt += 1
@@ -191,19 +204,36 @@ for step in range(start_step, end_step+1):
     # backward pass and update
     optimizer.zero_grad()
     loss.backward()
+    clip = 1
+#     for name, param in net.named_parameters():
+#         print(name)
+#         print(param.mean())
+#         print(param.grad.mean())
+#         assert not math.isnan(param.mean())
+#     torch.nn.utils.clip_grad_norm(net.parameters(), clip)
+#     for name, param in net.classifier_c1.named_parameters():
+#         print("range of {0} is {1}-{2}".format(name, param.min(),param.max()) )
+#         print(param.grad.mean())
+#         assert not math.isnan(param.mean())
     optimizer.step()
+#         print("loss {0}".format(loss.data[0]))
     if step % epoch_loss == 0:
         logger.scalar_summary('loss', loss, step)
+        logger.model_param_histo_summary(net, step)
     # Log to screen
+#     print("loss {0}".format(loss))
     if step % disp_interval == 0:
         duration = t.toc(average=False)
         fps = step_cnt / duration
-        log_text = 'step %d, image: %s, loss: %.4f, fps: %.2f (%.2fs per batch), lr: %.9f, momen: %.4f, wt_dec: %.6f' % (
-            step, blobs['im_name'], train_loss / step_cnt, fps, 1./fps, lr, momentum, weight_decay)
+        log_text = 'step %d, image: %s, loss: %.4f, cur_loss: %.4f, fps: %.2f (%.2fs per batch), lr: %.9f, momen: %.4f, wt_dec: %.6f' % (
+            step, blobs['im_name'], train_loss / step_cnt, loss.data[0], fps, 1./fps, lr, momentum, weight_decay)
         log_print(log_text, color='green', attrs=['bold'])
         re_cnt = True
+        print("pred and target {0} and {1}".format(pred, gt_vec))
     #TODO: evaluate the model every N iterations (N defined in handout)
-    if step%vis_interval==0:
+        
+        
+    if 0 and step%vis_interval==0:
         net.eval()
         losses = AverageMeter()
 #         for i_test in range(len(test_roidb)):
@@ -219,6 +249,7 @@ for step in range(start_step, end_step+1):
             loss = net.loss
             losses.update(loss.data[0])
         logger.scalar_summary('test_loss', losses.avg, step)
+        
         #TODO: Perform all visualizations here
         log_text = "Testing stage at step {0} with loss {1}".format(step, losses.avg)
         log_print(log_text)
@@ -235,8 +266,9 @@ for step in range(start_step, end_step+1):
                     rois = imdb.roidb[i_test_idx]['boxes']
                     scores, boxes = im_detect(net, im, rois)
                     im2show = np.copy(im)
-
+#                     print(scores)
                     # skip j = 0, because it's the background class
+#                     print("log for detection")
                     for j in xrange(0, imdb.num_classes):
                         newj = j
                         inds = np.where(scores[:, newj] > thresh)[0]
@@ -246,10 +278,13 @@ for step in range(start_step, end_step+1):
                             .astype(np.float32, copy=False)
                         keep = nms(cls_dets, cfg.TEST.NMS)
                         cls_dets = cls_dets[keep, :]
+#                         print("cls_dets's shape {0}".format(cls_dets.shape))
                         if visualize:
-                            im2show = vis_detections(im2show, imdb.classes[j], cls_dets)
-                        all_boxes[j][i] = cls_dets
-                    logger.image_summary(imdb.image_path_at(i_test_idx),im2show, step)
+                            im2show = vis_detections(im2show, imdb.classes[j], cls_dets, thresh)
+                    im2show = cv2.cvtColor(im2show, cv2.COLOR_RGB2BGR)
+                    v = torch.from_numpy(im2show).type(torch.FloatTensor)
+                    v = torch.unsqueeze(v, 0)
+                    logger.image_summary(imdb.image_path_at(i_test_idx),v, step)
                     
                     
                 
@@ -262,9 +297,14 @@ for step in range(start_step, end_step+1):
     
     # Save model occasionally 
     if (step % cfg.TRAIN.SNAPSHOT_ITERS == 0) and step > 0:
-        save_name = os.path.join(output_dir, '{}_{}.h5'.format(cfg.TRAIN.SNAPSHOT_PREFIX,step))
-        network.save_net(save_name, net)
-        print('Saved model to {}'.format(save_name))
+#         save_name = os.path.join(output_dir, '{}_{}.h5'.format(cfg.TRAIN.SNAPSHOT_PREFIX,step))
+#         network.save_net(save_name, net)
+#         print('Saved model to {}'.format(save_name))
+        save_checkpoint({
+                'epoch': step,
+                'state_dict': net.state_dict(),
+                'optimizer': optimizer.state_dict(),
+            }, "wsddn_test_checkpoint")
 
     if step in lr_decay_steps:
         lr *= lr_decay

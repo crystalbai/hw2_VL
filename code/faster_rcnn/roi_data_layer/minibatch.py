@@ -74,8 +74,10 @@ def get_weak_minibatch(roidb, num_classes):
         # Add to labels, bbox targets, and bbox loss blobs
         labels_blob = np.vstack((labels_blob, labels))
 
-        
+    if rois_blob.shape[0] > 512:
+        rois_blob = rois_blob[:512,:]
     blobs['rois'] = rois_blob
+    
     blobs['labels'] = labels_blob
     blobs['im_name'] = os.path.basename(roidb[0]['image'])
     blobs['im_info'] = np.array(

@@ -14,7 +14,21 @@ import network
 from network import Conv2d, FC
 from roi_pooling.modules.roi_pool import RoIPool
 from torch.autograd import Variable
-
+from matplotlib import pyplot as plt
+from free_loc.main import UnNormalize
+def debug_draw(img, rois):
+#     unorm = UnNormalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225))
+#     img = unorm(img)
+    img = img.permute(0, 2, 3, 1)
+    img = torch.squeeze(img)
+    print img.shape
+    img = img.data.cpu().numpy()
+    rois = rois.data.cpu().numpy()
+    for i in range(10):
+        box = rois[i, 1:]
+        cv2.rectangle(img,(box[0],box[1]),(box[2],box[3]),(0,0,255),3)
+    plt.imshow(img)
+    plt.show()    
 def nms_detections(pred_boxes, scores, nms_thresh, inds=None):
     dets = np.hstack((pred_boxes,
                       scores[:, np.newaxis])).astype(np.float32)
@@ -62,25 +76,23 @@ class WSDDN(nn.Module):
             nn.MaxPool2d(kernel_size=3, stride=2),
         )
         self.roi_pool = RoIPool(7, 7, 1.0 / 34)
-        self.classifier_c = nn.Sequential(
-            nn.Dropout(),
+        self.classifier_share = nn.Sequential(
             nn.Linear(256 * 7 * 7, 4096),
             nn.ReLU(inplace=True),
-            nn.Dropout(),
             nn.Linear(4096, 4096),
             nn.ReLU(inplace=True),
-            nn.Linear(4096, self.n_classes),
-            nn.Softmax(dim = 0)
         )
-        self.classifier_d = nn.Sequential(
-            nn.Dropout(),
-            nn.Linear(256 * 7 * 7, 4096),
-            nn.ReLU(inplace=True),
-            nn.Dropout(),
-            nn.Linear(4096, 4096),
-            nn.ReLU(inplace=True),
-            nn.Linear(4096, self.n_classes),
-            nn.Softmax(dim =1)
+        self.classifier_c1 = nn.Sequential(
+            nn.Linear(4096, self.n_classes)
+        )
+        self.classifier_c2 = nn.Sequential(
+            nn.Softmax(dim = 1)
+        )
+        self.classifier_d1 = nn.Sequential(
+            nn.Linear(4096, self.n_classes)
+        )
+        self.classifier_d2 = nn.Sequential(
+            nn.Softmax(dim =0)
         )
 
         
@@ -99,25 +111,47 @@ class WSDDN(nn.Module):
                 gt_boxes=None, gt_ishard=None, dontcare_areas=None):
         im_data = network.np_to_variable(im_data, is_cuda=True)
         im_data = im_data.permute(0, 3, 1, 2)
-	
+#         print im_data.shape
         #TODO: Use im_data and rois as input
         # compute cls_prob which are N_roi X 20 scores
         # Checkout faster_rcnn.py for inspiration
-        features = self.features(im_data)
+        feature = self.features(im_data)
         rois = network.np_to_variable(rois, is_cuda=True)
-        pooled_features = self.roi_pool(features, rois)
+#         print("feature {0}".format(feature))
+#         debug_draw(im_data, rois)
+#         print("rois_shape{0}".format(rois.shape))
+        pooled_features = self.roi_pool(feature, rois)
+#         print("pooled_features range {0}-{1}".format(pooled_features.min(),pooled_features.max()))
         x = pooled_features.view(pooled_features.size()[0], -1)
-        output_c = self.classifier_c(x)
-
-        output_d = self.classifier_d(x)
-        pred_score = output_c*output_d
+        x = self.classifier_share(x)
+#         print("classifier_share_min {0}-{1}".format(x.min(), x.max()))
+        output_c1 = self.classifier_c1(x)
+        output_c2 = self.classifier_c2(output_c1)
+#         print("output_c1_range {0}-{1}".format(output_c1.min(), output_c1.max()))
+#         print("output_c2_range {0}-{1}".format(output_c2.min(), output_c2.max()))
+        output_d1 = self.classifier_d1(x)
+        output_d2 = self.classifier_d2(output_d1)
+#         print("output_d1_range {0}-{1}".format(output_d1.min(), output_d1.max()))
+#         print("output_d2_range {0}-{1}".format(output_d2.min(), output_d2.max()))
+        pred_score = output_c2*output_d2
         cls_prob = pred_score.sum(0)
-        assert cls_prob.max().data.cpu().numpy() < 1
+#         print("shape of out put {0} and {1}".format(output_c1.size(), output_d1.size()))
+        if cls_prob.data.cpu().max() > 1.0-1e-10 or output_c2.data.cpu().max()> 1.0-1e-10 or output_d2.data.cpu().max()> 1.0-1e-10:
+            txt_out1 = output_c2.squeeze().data.cpu().numpy()
+            txt_out2 = output_d2.squeeze().data.cpu().numpy()
+            txt_d = output_d1.squeeze().data.cpu().numpy()
+            np.savetxt('d_test.out', txt_d, delimiter=', ',fmt='%.4f') 
+            np.savetxt('test.out', txt_out1, delimiter=', ',fmt='%.4f') 
+            np.savetxt('test2.out', txt_out2, delimiter=', ',fmt='%.4f') 
+            exit()
+
+        
+        assert cls_prob.max().data.cpu().numpy() <= 1
         if self.training:
             label_vec = network.np_to_variable(gt_vec, is_cuda=True)
-            label_vec = label_vec.view(self.n_classes,-1)
-            self.cross_entropy = self.build_loss(cls_prob, label_vec)
-        return pred_score
+            label_vec = label_vec.squeeze()
+            self.cross_entropy = -self.build_loss(cls_prob, label_vec)
+        return cls_prob
     
     def build_loss(self, cls_prob, label_vec):
         """Computes the loss
@@ -131,11 +165,12 @@ class WSDDN(nn.Module):
         #output of forward()
         #Checkout forward() to see how it is called
         ## alert, the image number should be 1 per batch
-        loss = 0.0
-        for cls_idx in range(self.n_classes):
-            loss += torch.log(label_vec[cls_idx]*(cls_prob[cls_idx]-0.5)+0.5)
-
-	    return loss
+#         print("cls_prob {0}".format(cls_prob))
+#         print("label_vec {0}".format(label_vec))
+        
+        loss =torch.log(label_vec*(cls_prob-0.5)+0.5).sum(0)
+#         print("loss {0}".format(loss))
+        return loss
 
     def get_image_blob_noscale(self, im):
         im_orig = im.astype(np.float32, copy=True)
