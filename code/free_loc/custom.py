@@ -111,6 +111,8 @@ class LocalizerAlexNet(nn.Module):
 
     def forward(self, x):
         #TODO: Define forward pass
+#         print "input shape"
+#         print x.shape
         x = self.features(x)
         x = self.classifier(x)
 #         print "feature map shape"
@@ -131,14 +133,39 @@ class LocalizerAlexNetRobust(nn.Module):
     def __init__(self, num_classes=20):
         super(LocalizerAlexNetHighres, self).__init__()
         #TODO: Ignore for now until instructed
+        self.features = nn.Sequential(
+            nn.Conv2d(3, 64, kernel_size=11, stride=4, padding=2),
+            nn.ReLU(inplace=True),
+            nn.MaxPool2d(kernel_size=3, stride=2),
+            nn.Conv2d(64, 192, kernel_size=5, padding=2),
+            nn.ReLU(inplace=True),
+            nn.MaxPool2d(kernel_size=3, stride=2),
+            nn.Conv2d(192, 384, kernel_size=3, padding=1),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(384, 256, kernel_size=3, padding=1),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(256, 256, kernel_size=3, padding=1),
+            nn.ReLU(inplace=True),
+            nn.MaxPool2d(kernel_size=3, stride=2),
+        )
+        self.classifier = nn.Sequential(
+            nn.Conv2d(256, 256, kernel_size=(3, 3), stride=(1, 1)),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(256, 256, kernel_size=(1, 1), stride=(1, 1)),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(256, 20, kernel_size=(1, 1), stride=(1, 1)),
 
+        )
 
 
     def forward(self, x):
         #TODO: Ignore for now until instructed
-
-
-        return x
+        x = self.features(x)
+        x = self.classifier(x)
+        self.f_map = x
+        drop_f = F.Dropout(x, training = self.training)
+        output = F.max_pool2d(drop_f, kernel_size=x.size()[2:])
+        return output
 
 
 
@@ -175,10 +202,17 @@ def localizer_alexnet_robust(pretrained=False, **kwargs):
     model = LocalizerAlexNetRobust(**kwargs)
     #TODO: Ignore for now until instructed
 
+    if pretrained:
+        model.apply(weights_init)
+        print("=> using pre-trained model '{}'".format('alexnet'))
+        pretrained_state = model_zoo.load_url(model_urls['alexnet'])
+        model_state = model.state_dict()
 
-
-
-
+        pretrained_state = {k: v for k, v in pretrained_state.iteritems() if
+                            k in model_state and v.size() == model_state[k].size()}
+        model_state.update(pretrained_state)
+        model.load_state_dict(model_state)
+        # model.load_state_dict(model_zoo.load_url(model_urls['alexnet']))
 
     return model
 

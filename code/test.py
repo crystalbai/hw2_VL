@@ -18,7 +18,8 @@ from fast_rcnn.nms_wrapper import nms
 from fast_rcnn.bbox_transform import bbox_transform_inv, clip_boxes
 from datasets.factory import get_imdb
 from fast_rcnn.config import cfg, cfg_from_file, get_output_dir
-
+from logger import Logger
+import pdb
 # hyper-parameters
 # ------------
 imdb_name = 'voc_2007_test'
@@ -58,7 +59,7 @@ def vis_detections(im, class_name, dets, thresh=0.8):
 def im_detect(net, image, rois):
     """Detect object classes in an image given object proposals.
     Returns:
-        scores (ndarray): R x K array of object class scores (K includes // exclude
+        scores (ndarray): R x K array of object class scores (K includes
             background as object category 0)
         boxes (ndarray): R x (4*K) array of predicted bounding boxes
     """
@@ -69,7 +70,8 @@ def im_detect(net, image, rois):
         [[im_data.shape[1], im_data.shape[2], im_scales[0]]],
         dtype=np.float32)
 
-    cls_prob = net(im_data, rois, im_info)
+    _,cls_prob = net(im_data, rois, im_info)
+
     scores = cls_prob.data.cpu().numpy()
     boxes = rois[:, 1:5] / im_info[0][2]
 
@@ -93,7 +95,7 @@ def test_net(name, net, imdb, max_per_image=300, thresh=0.05, visualize=False,
     #    all_boxes[cls][image] = N x 5 array of detections in
     #    (x1, y1, x2, y2, score)
     all_boxes = [[[] for _ in xrange(num_images)]
-                 for _ in xrange(imdb.num_classes)]
+                 for _ in xrange(imdb.num_classes+1)]
 
     output_dir = get_output_dir(imdb, name)
 
@@ -102,10 +104,16 @@ def test_net(name, net, imdb, max_per_image=300, thresh=0.05, visualize=False,
     det_file = os.path.join(output_dir, 'detections.pkl')
 
     roidb = imdb.roidb
-
     for i in range(num_images):
-        im = cv2.imread(imdb.image_path_at(i))
+        if not os.path.isfile(imdb.image_path_at(i)):
+            print(imdb.image_path_at(i))
+            print("not exist")
+#         else:
+#             print(imdb.image_path_at(i))
+#             print("exist")
+        im = cv2.imread(imdb.image_path_at(i)) 
         rois = imdb.roidb[i]['boxes']
+
         _t['im_detect'].tic()
         scores, boxes = im_detect(net, im, rois)
         detect_time = _t['im_detect'].toc(average=False)
@@ -115,9 +123,9 @@ def test_net(name, net, imdb, max_per_image=300, thresh=0.05, visualize=False,
             # im2show = np.copy(im[:, :, (2, 1, 0)])
             im2show = np.copy(im)
 
-        # no skipping !!
-        for j in xrange(0, imdb.num_classes+1):
-            newj = j
+        # skip j = 0, because it's the background class
+        for j in xrange(1, imdb.num_classes+1):
+            newj = j-1
             inds = np.where(scores[:, newj] > thresh)[0]
             cls_scores = scores[inds, newj]
             cls_boxes = boxes[inds, newj * 4:(newj + 1) * 4]
@@ -126,26 +134,32 @@ def test_net(name, net, imdb, max_per_image=300, thresh=0.05, visualize=False,
             keep = nms(cls_dets, cfg.TEST.NMS)
             cls_dets = cls_dets[keep, :]
             if visualize:
-                im2show = vis_detections(im2show, imdb.classes[j], cls_dets)
+                im2show = vis_detections(im2show, imdb.classes[newj], cls_dets, thresh)
             all_boxes[j][i] = cls_dets
 
         # Limit to max_per_image detections *over all classes*
         if max_per_image > 0:
             image_scores = np.hstack([all_boxes[j][i][:, -1]
-                                      for j in xrange(0, imdb.num_classes)])
+                                      for j in xrange(1, imdb.num_classes)])
             if len(image_scores) > max_per_image:
                 image_thresh = np.sort(image_scores)[-max_per_image]
                 for j in xrange(1, imdb.num_classes):
                     keep = np.where(all_boxes[j][i][:, -1] >= image_thresh)[0]
                     all_boxes[j][i] = all_boxes[j][i][keep, :]
         nms_time = _t['misc'].toc(average=False)
-
-        print('im_detect: {:d}/{:d} {:.3f}s {:.3f}s'.format(i + 1, num_images, detect_time, nms_time))
+        if i%1000 == 0:
+            print('im_detect: {:d}/{:d} {:.3f}s {:.3f}s'.format(i + 1, num_images, detect_time, nms_time))
 
         if visualize and np.random.rand()<0.01:
             # TODO: Visualize here using tensorboard
             # TODO: use the logger that is an argument to this function
-            print('Visualizing')
+            im2show = cv2.cvtColor(im2show, cv2.COLOR_RGB2BGR)
+            v = torch.from_numpy(im2show).type(torch.FloatTensor)
+            v = torch.unsqueeze(v, 0)
+            
+            logger.image_summary(imdb.image_path_at(i),v, step)
+            
+            print('Visualize test dataset using tensor board')
             #cv2.imshow('test', im2show)
             #cv2.waitKey(1)
 
@@ -167,7 +181,7 @@ if __name__ == '__main__':
     trained_model = trained_model_fmt.format(cfg.TRAIN.SNAPSHOT_PREFIX,100000)
     network.load_net(trained_model, net)
     print('load model successfully!')
-
+    logger = Logger()
     net.cuda()
     net.eval()
 

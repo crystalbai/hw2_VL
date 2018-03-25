@@ -79,6 +79,7 @@ class WSDDN(nn.Module):
         self.classifier_share = nn.Sequential(
             nn.Linear(256 * 7 * 7, 4096),
             nn.ReLU(inplace=True),
+#             nn.Dropout(),
             nn.Linear(4096, 4096),
             nn.ReLU(inplace=True),
         )
@@ -109,6 +110,9 @@ class WSDDN(nn.Module):
 	
     def forward(self, im_data, rois, im_info, gt_vec=None,
                 gt_boxes=None, gt_ishard=None, dontcare_areas=None):
+        if rois.shape[0] > 256 and (self.training != True):
+            rois = rois[:256,:]
+#             print("after clip{0}".format(rois.shape))
         im_data = network.np_to_variable(im_data, is_cuda=True)
         im_data = im_data.permute(0, 3, 1, 2)
 #         print im_data.shape
@@ -151,7 +155,7 @@ class WSDDN(nn.Module):
             label_vec = network.np_to_variable(gt_vec, is_cuda=True)
             label_vec = label_vec.squeeze()
             self.cross_entropy = -self.build_loss(cls_prob, label_vec)
-        return cls_prob
+        return cls_prob, pred_score
     
     def build_loss(self, cls_prob, label_vec):
         """Computes the loss
