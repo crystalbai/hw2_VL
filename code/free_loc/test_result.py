@@ -26,13 +26,14 @@ from custom import *
 from eval import compute_map,compute_curve
 import visdom
 import scipy.misc
+import pdb
 
 model_names = sorted(name for name in models.__dict__
     if name.islower() and not name.startswith("__")
     and callable(models.__dict__[name]))
 
 parser = argparse.ArgumentParser(description='PyTorch ImageNet Training')
-parser.add_argument('--arch', default='localizer_alexnet')
+parser.add_argument('--arch', default='localizer_alexnet_robust')
 parser.add_argument('-j', '--workers', default=4, type=int, metavar='N',
                     help='number of data loading workers (default: 4)')
 parser.add_argument('--epochs', default=30, type=int, metavar='N',
@@ -81,11 +82,24 @@ best_prec1 = 0
 #             loss += torch.log(1+ torch.exp(-y[b,k]*fx[b,k]))
 #     loss = loss/batch
 #     return loss
+# def multilabel_loss1(fx,y):
+#     print fx[1,:]
+#     print y[1,:]
+#     batch = fx.size(0)
+#     loss = torch.log(1+ torch.exp(-y*fx)).sum(0).sum(0)/batch
+#     return loss
 def multilabel_loss(fx,y):
-    batch = fx.size(0)
-    loss = torch.log(1+ torch.exp(-y*fx)).sum(0).sum(0)/batch
+#     print fx[1,:]
+#     print y[1,:]
+    loss_layer = torch.nn.BCEWithLogitsLoss()
+    loss = loss_layer(fx, y)
     return loss
-
+def multilabel_loss_robust(fx,y):
+#     print fx[1,:]
+#     print y[1,:]
+    loss_layer = torch.nn.BCELoss()
+    loss = loss_layer(fx, y)
+    return loss
 vis = visdom.Visdom(server='http://localhost',port='8097')
 def main():
     np.random.seed(5)
@@ -97,8 +111,10 @@ def main():
     print("=> creating model '{}'".format(args.arch))
     if args.arch=='localizer_alexnet':
         model = localizer_alexnet(pretrained=args.pretrained)
+        criterion = multilabel_loss
     elif args.arch=='localizer_alexnet_robust':
         model = localizer_alexnet_robust(pretrained=args.pretrained)
+        criterion = multilabel_loss_robust
     print(model)
 
     model.features = torch.nn.DataParallel(model.features)
@@ -106,9 +122,9 @@ def main():
 
     # TODO:
     # define loss function (criterion) and optimizer
-    criterion = multilabel_loss
+#     criterion = multilabel_loss
     params = list(model.parameters())
-#     optimizer = torch.optim.SGD(params, args.lr,
+#     optimizer = torch.optim.SGD(params[2:], args.lr,
 #                                 momentum=args.momentum,
 #                                 weight_decay=args.weight_decay)
 
@@ -163,7 +179,7 @@ def main():
         ])),
         batch_size=args.batch_size, shuffle=False,
         num_workers=args.workers, pin_memory=True)
-    logger = Logger('./tfboard2', name='freeloc-vis')
+    logger = Logger('./tfboard2', name='freeloc_robust')
     if args.evaluate:
         validate(val_loader, model, criterion, logger,0)
         return
@@ -293,6 +309,10 @@ def train(train_loader, model, criterion, optimizer, epoch,logger):
         logger.scalar_summary('m1', m1, epoch*(len(train_loader))+i)
         logger.scalar_summary('m2', m2, epoch*(len(train_loader))+i)
         if i % np.floor(len(train_loader)/4) == 0:
+            if args.arch=='localizer_alexnet_robust':
+                model.eval()
+                imoutput = model(input_var)
+                model.train()
             unorm = UnNormalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225))
             vis_tensor = unorm(input)
             print "{0} image in this batch".format(input.shape[0])
@@ -303,6 +323,7 @@ def train(train_loader, model, criterion, optimizer, epoch,logger):
 #                 print(input[[batch_i],:,:,:].shape)
                 logger.image_summary("{0}_image_visual".format(cap_tf), input[[batch_i],:,:,:], epoch*(len(train_loader))+i)
                 f_map = model.get_featuremap().data.cpu().numpy()
+#                 print(f_map.shape)
                 for i_cls in range(cls):
                     if target[batch_i,i_cls] == 1:
                         f_map_idx = f_map[batch_i, i_cls, :,:]
@@ -454,13 +475,16 @@ def adjust_learning_rate(optimizer, epoch):
 def metric1(output, target):
     # TODO: Ignore for now - proceed till instructed
     #transfer fx to p(k|x)
-    thres = 0.5
+    thres = 0.3
     output = output.cpu().numpy()
 
     p = np.zeros(target.shape)
     for i in range(output.shape[0]):
         for j in range(output.shape[1]):
-            p[i][j] = ( (1.0/(1+np.exp(-output[i][j]))))
+            if args.arch=='localizer_alexnet':
+                p[i][j] = ( (1.0/(1+np.exp(-output[i][j]))))
+            elif args.arch=='localizer_alexnet_robust':
+                p[i][j] = output[i][j]
             target[i][j] = int(target[i][j] == 1)
 
     AP = compute_map(target, p, average=None)
@@ -475,12 +499,15 @@ def metric2(output, target):
     # since this dataset is highly unbalanced, we only penalize the false positive 
         # TODO: Ignore for now - proceed till instructed
     #transfer fx to p(k|x)
-    thres = 0.5
+    thres = 0.3
     output = output.cpu().numpy()
     p = np.zeros(target.shape, dtype = np.int32)
     for i in range(output.shape[0]):
         for j in range(output.shape[1]):
-            tmp = ( (1.0/(1+np.exp(-output[i][j]))))
+            if args.arch=='localizer_alexnet':
+                tmp = ( (1.0/(1+np.exp(-output[i][j]))))
+            elif args.arch=='localizer_alexnet_robust':
+                tmp = output[i][j]
             p[i][j] = int(tmp> thres)
             target[i][j] = int(target[i][j] == 1)
     AP = compute_curve(target, p, average=None)
@@ -490,6 +517,7 @@ def metric2(output, target):
     mAP = np.mean(AP)
 #     print('Obtained curve {}'.format(mAP))
     return mAP
+
 
 if __name__ == '__main__':
     main()

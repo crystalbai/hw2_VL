@@ -10,6 +10,7 @@ import os
 import os.path
 import numpy as np
 import cv2
+import torch
 
 IMG_EXTENSIONS = ['.jpg', '.jpeg', '.png', '.ppm', '.bmp', '.pgm']
 
@@ -96,7 +97,6 @@ class LocalizerAlexNet(nn.Module):
             nn.ReLU(inplace=True),
             nn.Conv2d(256, 256, kernel_size=3, padding=1),
             nn.ReLU(inplace=True),
-            nn.MaxPool2d(kernel_size=3, stride=2),
         )
         self.classifier = nn.Sequential(
             nn.Conv2d(256, 256, kernel_size=(3, 3), stride=(1, 1)),
@@ -131,7 +131,7 @@ class LocalizerAlexNet(nn.Module):
 
 class LocalizerAlexNetRobust(nn.Module):
     def __init__(self, num_classes=20):
-        super(LocalizerAlexNetHighres, self).__init__()
+        super(LocalizerAlexNetRobust, self).__init__()
         #TODO: Ignore for now until instructed
         self.features = nn.Sequential(
             nn.Conv2d(3, 64, kernel_size=11, stride=4, padding=2),
@@ -146,7 +146,6 @@ class LocalizerAlexNetRobust(nn.Module):
             nn.ReLU(inplace=True),
             nn.Conv2d(256, 256, kernel_size=3, padding=1),
             nn.ReLU(inplace=True),
-            nn.MaxPool2d(kernel_size=3, stride=2),
         )
         self.classifier = nn.Sequential(
             nn.Conv2d(256, 256, kernel_size=(3, 3), stride=(1, 1)),
@@ -154,7 +153,6 @@ class LocalizerAlexNetRobust(nn.Module):
             nn.Conv2d(256, 256, kernel_size=(1, 1), stride=(1, 1)),
             nn.ReLU(inplace=True),
             nn.Conv2d(256, 20, kernel_size=(1, 1), stride=(1, 1)),
-
         )
 
 
@@ -163,11 +161,14 @@ class LocalizerAlexNetRobust(nn.Module):
         x = self.features(x)
         x = self.classifier(x)
         self.f_map = x
-        drop_f = F.Dropout(x, training = self.training)
-        output = F.max_pool2d(drop_f, kernel_size=x.size()[2:])
+        sig_out = F.sigmoid(x)
+#         print(sig_out.shape)
+        sig = F.dropout(sig_out, p=0.5, training = self.training)
+        output = F.max_pool2d(sig_out, kernel_size=x.size()[2:])
         return output
 
-
+    def get_featuremap(self):
+        return self.f_map
 
 def localizer_alexnet(pretrained=False, **kwargs):
     r"""AlexNet model architecture from the
@@ -265,7 +266,7 @@ class IMDBDataset(data.Dataset):
         tmp = self.imgs[index]
         img = pil_loader(tmp[0])
         cls = tmp[1]
-        target = np.zeros(len(self.classes))-1
+        target = np.zeros(len(self.classes))
         for c in cls:
             target[c-1] = 1
 

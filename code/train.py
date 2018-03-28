@@ -68,51 +68,51 @@ max_per_image = 300
 remove_all_log = not resume  # remove all historical experiments in TensorBoard
 exp_name = "paper2"  # the previous experiment name in TensorBoard
 # ------------
-if remove_all_log == True and os.path.exists(os.path.join("./tboard/", exp_name)):
-    shutil.rmtree(os.path.join("./tboard/", exp_name))
-logger = Logger('./tboard', name=exp_name)
-vis = visdom.Visdom(server='http://localhost',port='8097')
+if remove_all_log == True and os.path.exists(os.path.join("./tfboard2/", exp_name)):
+    shutil.rmtree(os.path.join("./tfboard2/", exp_name))
+logger = Logger('./tfboard2', name=exp_name)
+vis = visdom.Visdom(server='http://localhost',port='7097')
 
-def vis_detections(im, class_name, dets, thresh=0.8):
-    """Visual debugging of detections."""
-    for i in range(np.minimum(10, dets.shape[0])):
-        bbox = tuple(int(np.round(x)) for x in dets[i, :4])
-        score = dets[i, -1]
-        if score > thresh:
-            cv2.rectangle(im, bbox[0:2], bbox[2:4], (0, 204, 0), 2)
-            cv2.putText(im, '%s: %.3f' % (class_name, score), (bbox[0], bbox[1] + 15), cv2.FONT_HERSHEY_PLAIN,
-                        1.0, (0, 0, 255), thickness=1)
-    return im
+# def vis_detections(im, class_name, dets, thresh=0.8):
+#     """Visual debugging of detections."""
+#     for i in range(np.minimum(10, dets.shape[0])):
+#         bbox = tuple(int(np.round(x)) for x in dets[i, :4])
+#         score = dets[i, -1]
+#         if score > thresh:
+#             cv2.rectangle(im, bbox[0:2], bbox[2:4], (0, 204, 0), 2)
+#             cv2.putText(im, '%s: %.3f' % (class_name, score), (bbox[0], bbox[1] + 15), cv2.FONT_HERSHEY_PLAIN,
+#                         1.0, (0, 0, 255), thickness=1)
+#     return im
 
 
-def im_detect(net, image, rois):
-    """Detect object classes in an image given object proposals.
-    Returns:
-        scores (ndarray): R x K array of object class scores (K includes // exclude
-            background as object category 0)
-        boxes (ndarray): R x (4*K) array of predicted bounding boxes
-    """
+# def im_detect(net, image, rois):
+#     """Detect object classes in an image given object proposals.
+#     Returns:
+#         scores (ndarray): R x K array of object class scores (K includes // exclude
+#             background as object category 0)
+#         boxes (ndarray): R x (4*K) array of predicted bounding boxes
+#     """
 
-    im_data, im_scales = net.get_image_blob(image)
-    rois = np.hstack((np.zeros((rois.shape[0], 1)), rois * im_scales[0]))
-    im_info = np.array(
-        [[im_data.shape[1], im_data.shape[2], im_scales[0]]],
-        dtype=np.float32)
+#     im_data, im_scales = net.get_image_blob(image)
+#     rois = np.hstack((np.zeros((rois.shape[0], 1)), rois * im_scales[0]))
+#     im_info = np.array(
+#         [[im_data.shape[1], im_data.shape[2], im_scales[0]]],
+#         dtype=np.float32)
 
-    cls_prob = net(im_data, rois, im_info)
-    scores = cls_prob.data.cpu().numpy()
-    boxes = rois[:, 1:5] / im_info[0][2]
+#     cls_prob = net(im_data, rois, im_info)
+#     scores = cls_prob.data.cpu().numpy()
+#     boxes = rois[:, 1:5] / im_info[0][2]
 
-    if cfg.TEST.BBOX_REG:
-        # Apply bounding-box regression deltas
-        box_deltas = bbox_pred.data.cpu().numpy()
-        pred_boxes = bbox_transform_inv(boxes, box_deltas)
-        pred_boxes = clip_boxes(pred_boxes, image.shape)
-    else:
-        # Simply repeat the boxes, once for each class
-        pred_boxes = np.tile(boxes, (1, scores.shape[1]))
+#     if cfg.TEST.BBOX_REG:
+#         # Apply bounding-box regression deltas
+#         box_deltas = bbox_pred.data.cpu().numpy()
+#         pred_boxes = bbox_transform_inv(boxes, box_deltas)
+#         pred_boxes = clip_boxes(pred_boxes, image.shape)
+#     else:
+#         # Simply repeat the boxes, once for each class
+#         pred_boxes = np.tile(boxes, (1, scores.shape[1]))
 
-    return scores, pred_boxes
+#     return scores, pred_boxes
 
 
 if rand_seed is not None:
@@ -175,8 +175,8 @@ net.train()
 id_cls = {idx: c for idx, c in enumerate(imdb.classes)}
 # Create optimizer for network parameters
 params = list(net.parameters())
-optimizer = torch.optim.SGD(params[10:], lr=lr, momentum=momentum, weight_decay=weight_decay)
-# optimizer = torch.optim.Adam(params[2:],lr = lr, weight_decay=weight_decay)
+# optimizer = torch.optim.SGD(params[2:], lr=lr, momentum=momentum, weight_decay=weight_decay)
+optimizer = torch.optim.Adam(params[2:],lr = lr, weight_decay=weight_decay)
 
 if not os.path.exists(output_dir):
     os.makedirs(output_dir)
@@ -258,7 +258,7 @@ for step in range(start_step, end_step + 1):
     if visualize and step%vis_interval==0:
         net.eval()
         aps = test_net(save_name, net, test_imdb,
-                       max_per_image, thresh=thresh, visualize=False, logger=logger, step=step)
+                       max_per_image, thresh=thresh, visualize=visualize, logger=logger, step=step)
         net.train()
         #TODO: Create required visualizations
         if use_tensorboard:

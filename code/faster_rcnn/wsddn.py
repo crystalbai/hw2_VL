@@ -9,7 +9,6 @@ from utils.timer import Timer
 from utils.blob import im_list_to_blob, prep_im_for_blob
 from fast_rcnn.nms_wrapper import nms
 from fast_rcnn.bbox_transform import bbox_transform_inv, clip_boxes
-
 import network
 from network import Conv2d, FC
 from roi_pooling.modules.roi_pool import RoIPool
@@ -73,31 +72,25 @@ class WSDDN(nn.Module):
             nn.ReLU(inplace=True),
             nn.Conv2d(256, 256, kernel_size=3, padding=1),
             nn.ReLU(inplace=True),
-            nn.MaxPool2d(kernel_size=3, stride=2),
         )
-        self.roi_pool = RoIPool(7, 7, 1.0 / 34)
+        self.roi_pool = RoIPool(7, 7, 1.0 / 17)
         self.classifier_share = nn.Sequential(
             nn.Linear(256 * 7 * 7, 4096),
             nn.ReLU(inplace=True),
-#             nn.Dropout(),
+            nn.Dropout(),
             nn.Linear(4096, 4096),
             nn.ReLU(inplace=True),
         )
-        self.classifier_c1 = nn.Sequential(
-            nn.Linear(4096, self.n_classes)
-        )
-        self.classifier_c2 = nn.Sequential(
+        self.classifier_c = nn.Sequential(
+            nn.Linear(4096, self.n_classes),
             nn.Softmax(dim = 1)
         )
-        self.classifier_d1 = nn.Sequential(
-            nn.Linear(4096, self.n_classes)
-        )
-        self.classifier_d2 = nn.Sequential(
+
+        self.classifier_d = nn.Sequential(
+            nn.Linear(4096, self.n_classes),
             nn.Softmax(dim =0)
         )
-
-        
-        
+ 
         # loss
         self.cross_entropy = None
 
@@ -110,9 +103,12 @@ class WSDDN(nn.Module):
 	
     def forward(self, im_data, rois, im_info, gt_vec=None,
                 gt_boxes=None, gt_ishard=None, dontcare_areas=None):
-        if rois.shape[0] > 256 and (self.training != True):
-            rois = rois[:256,:]
+#         if rois.shape[0] > 256 and (self.training != True):
+        if rois.shape[0] > 64:
+            rois = rois[:64,:]
 #             print("after clip{0}".format(rois.shape))
+#         print(im_data.shape)
+#         print(rois.shape)
         im_data = network.np_to_variable(im_data, is_cuda=True)
         im_data = im_data.permute(0, 3, 1, 2)
 #         print im_data.shape
@@ -129,28 +125,14 @@ class WSDDN(nn.Module):
         x = pooled_features.view(pooled_features.size()[0], -1)
         x = self.classifier_share(x)
 #         print("classifier_share_min {0}-{1}".format(x.min(), x.max()))
-        output_c1 = self.classifier_c1(x)
-        output_c2 = self.classifier_c2(output_c1)
-#         print("output_c1_range {0}-{1}".format(output_c1.min(), output_c1.max()))
-#         print("output_c2_range {0}-{1}".format(output_c2.min(), output_c2.max()))
-        output_d1 = self.classifier_d1(x)
-        output_d2 = self.classifier_d2(output_d1)
-#         print("output_d1_range {0}-{1}".format(output_d1.min(), output_d1.max()))
-#         print("output_d2_range {0}-{1}".format(output_d2.min(), output_d2.max()))
-        pred_score = output_c2*output_d2
+        output_c = self.classifier_c(x)
+        output_d = self.classifier_d(x)
+        pred_score = output_c*output_d
         cls_prob = pred_score.sum(0)
 #         print("shape of out put {0} and {1}".format(output_c1.size(), output_d1.size()))
-        if cls_prob.data.cpu().max() > 1.0-1e-10 or output_c2.data.cpu().max()> 1.0-1e-10 or output_d2.data.cpu().max()> 1.0-1e-10:
-            txt_out1 = output_c2.squeeze().data.cpu().numpy()
-            txt_out2 = output_d2.squeeze().data.cpu().numpy()
-            txt_d = output_d1.squeeze().data.cpu().numpy()
-            np.savetxt('d_test.out', txt_d, delimiter=', ',fmt='%.4f') 
-            np.savetxt('test.out', txt_out1, delimiter=', ',fmt='%.4f') 
-            np.savetxt('test2.out', txt_out2, delimiter=', ',fmt='%.4f') 
-            exit()
 
-        
-        assert cls_prob.max().data.cpu().numpy() <= 1
+        if cls_prob.max().data.cpu().numpy() > 1 + 1e-3:
+            print("cls_error")
         if self.training:
             label_vec = network.np_to_variable(gt_vec, is_cuda=True)
             label_vec = label_vec.squeeze()
